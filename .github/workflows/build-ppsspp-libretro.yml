@@ -23,42 +23,36 @@ jobs:
           git submodule update --init --recursive
           git status --short
 
-      - name: Install GNU Make
-        shell: pwsh
-        run: choco install make -y --no-progress
-
-      - name: Patch Libretro Makefile linker
+      - name: Configure CMake for Libretro
         shell: pwsh
         run: |
-          $path = "ppsspp/libretro/Makefile"
-          $text = Get-Content $path -Raw
-          $text = $text -replace '(?m)^\s*LD = link\.exe\s*$', "`tLD = `"`$(VCCompilerToolsBinDir)/link.exe`""
-          Set-Content -Path $path -Value $text -Encoding utf8
-          Select-String -Path $path -Pattern 'LD ='
+          cmake -S ppsspp -B build -G "Visual Studio 17 2022" -A x64 `
+            -DLIBRETRO=ON `
+            -DUSE_DISCORD=OFF `
+            -DHEADLESS=OFF `
+            -DUNITTEST=OFF
 
-      - name: Build Windows x64 Libretro core with MSVC
-        shell: cmd
-        run: |
-          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set VSINSTALL=%%i
-          call "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat"
-          set "PATH=C:\ProgramData\chocolatey\bin;%PATH%"
-          echo MSVC linker should be first:
-          where link.exe
-          cd ppsspp\libretro
-          make -j2 platform=windows_msvc2019_desktop_x64
-
-      - name: Verify output
+      - name: Build ppsspp_libretro.dll
         shell: pwsh
         run: |
-          if (!(Test-Path "ppsspp/libretro/ppsspp_libretro.dll")) {
+          cmake --build build --config Release --target ppsspp_libretro -- /m:2
+
+      - name: Locate and verify output
+        id: locate
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Path build -Recurse -Filter ppsspp_libretro.dll | Select-Object -First 1
+          if (!$dll) {
             throw "ppsspp_libretro.dll was not produced"
           }
-          Get-Item "ppsspp/libretro/ppsspp_libretro.dll" | Format-List Name,Length,LastWriteTime
+          Write-Host "Found: $($dll.FullName)"
+          Get-Item $dll.FullName | Format-List Name,Length,LastWriteTime
+          "dll_path=$($dll.FullName)" >> $env:GITHUB_OUTPUT
 
       - name: Upload ppsspp_libretro.dll
         uses: actions/upload-artifact@v4
         with:
           name: ppsspp-libretro-v1.19.3-windows-x64
-          path: ppsspp/libretro/ppsspp_libretro.dll
+          path: ${{ steps.locate.outputs.dll_path }}
           if-no-files-found: error
           retention-days: 30
