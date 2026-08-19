@@ -23,6 +23,20 @@ jobs:
           git submodule update --init --recursive
           git status --short
 
+      - name: Patch PPGe atlas fallback for U+570B
+        shell: pwsh
+        run: |
+          $path = "ppsspp/Core/Util/PPGeDraw.cpp"
+          $text = Get-Content $path -Raw
+          $needle = "static const AtlasChar *PPGeGetChar(const AtlasFont &atlasfont, unsigned int cval)`r`n{`r`n`tconst AtlasChar *c = atlasfont.getChar(cval);"
+          $replacement = "static const AtlasChar *PPGeGetChar(const AtlasFont &atlasfont, unsigned int cval)`r`n{`r`n`t// PPSSPP's PPGe atlas does not contain U+570B (traditional 國).`r`n`t// Use the Japanese shinjitai U+56FD (国) instead of rendering U+FFFD.`r`n`tif (cval == 0x570B)`r`n`t`tcval = 0x56FD;`r`n`tconst AtlasChar *c = atlasfont.getChar(cval);"
+          if (!$text.Contains($needle)) {
+            throw "PPGeGetChar patch point not found"
+          }
+          $text = $text.Replace($needle, $replacement)
+          Set-Content -Path $path -Value $text -Encoding utf8
+          Select-String -Path $path -Pattern '570B|56FD' -Context 2,2
+
       - name: Configure CMake for Libretro
         shell: pwsh
         run: |
@@ -52,7 +66,7 @@ jobs:
       - name: Upload ppsspp_libretro.dll
         uses: actions/upload-artifact@v4
         with:
-          name: ppsspp-libretro-v1.19.3-windows-x64
+          name: ppsspp-libretro-v1.19.3-ppge-u570b-fix-windows-x64
           path: ${{ steps.locate.outputs.dll_path }}
           if-no-files-found: error
           retention-days: 30
