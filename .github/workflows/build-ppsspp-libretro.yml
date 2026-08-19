@@ -32,9 +32,11 @@ jobs:
         run: |
           for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set VSINSTALL=%%i
           call "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat"
-          set PATH=C:\ProgramData\chocolatey\bin;%PATH%
+          set "PATH=C:\ProgramData\chocolatey\bin;%PATH%"
+          echo MSVC linker should be first:
+          where link.exe
           cd ppsspp\libretro
-          make -j2 platform=windows_msvc2019_desktop_x64
+          make -j2 SHELL=cmd.exe platform=windows_msvc2019_desktop_x64
 
       - name: Verify output
         shell: pwsh
