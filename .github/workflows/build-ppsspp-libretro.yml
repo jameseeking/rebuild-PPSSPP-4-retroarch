@@ -1,0 +1,53 @@
+name: Build PPSSPP v1.19.3 Libretro Windows x64
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout this repository
+        uses: actions/checkout@v4
+
+      - name: Clone PPSSPP v1.19.3 with submodules
+        shell: pwsh
+        run: |
+          git config --global core.longpaths true
+          git clone --branch v1.19.3 --recursive https://github.com/hrydgard/ppsspp.git ppsspp
+          cd ppsspp
+          git submodule update --init --recursive
+          git status --short
+
+      - name: Install GNU Make
+        shell: pwsh
+        run: choco install make -y --no-progress
+
+      - name: Build Windows x64 Libretro core with MSVC
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set VSINSTALL=%%i
+          call "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat"
+          set PATH=C:\ProgramData\chocolatey\bin;%PATH%
+          cd ppsspp\libretro
+          make -j2 platform=windows_msvc2019_desktop_x64
+
+      - name: Verify output
+        shell: pwsh
+        run: |
+          if (!(Test-Path "ppsspp/libretro/ppsspp_libretro.dll")) {
+            throw "ppsspp_libretro.dll was not produced"
+          }
+          Get-Item "ppsspp/libretro/ppsspp_libretro.dll" | Format-List Name,Length,LastWriteTime
+
+      - name: Upload ppsspp_libretro.dll
+        uses: actions/upload-artifact@v4
+        with:
+          name: ppsspp-libretro-v1.19.3-windows-x64
+          path: ppsspp/libretro/ppsspp_libretro.dll
+          if-no-files-found: error
+          retention-days: 30
