@@ -1,4 +1,4 @@
-name: Build PPSSPP v1.19.3 Libretro Windows x64
+name: Build PPSSPP v1.19.3 Libretro Windows x64 with U+570B atlas
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
 jobs:
   build:
     runs-on: windows-2022
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: Checkout this repository
@@ -23,19 +23,60 @@ jobs:
           git submodule update --init --recursive
           git status --short
 
-      - name: Patch PPGe atlas fallback for U+570B
+      - name: Download CJK fallback font
         shell: pwsh
         run: |
-          $path = "ppsspp/Core/Util/PPGeDraw.cpp"
+          $url = "https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTF/Japanese/NotoSansCJKjp-Regular.otf"
+          Invoke-WebRequest -Uri $url -OutFile "ppsspp/NotoSansCJKjp-Regular.otf"
+          Get-Item "ppsspp/NotoSansCJKjp-Regular.otf" | Format-List Name,Length
+
+      - name: Patch atlas generator to include U+570B
+        shell: pwsh
+        run: |
+          $path = "ppsspp/ext/native/tools/atlastool.cpp"
           $text = Get-Content $path -Raw
-          $needle = "static const AtlasChar *PPGeGetChar(const AtlasFont &atlasfont, unsigned int cval)`r`n{`r`n`tconst AtlasChar *c = atlasfont.getChar(cval);"
-          $replacement = "static const AtlasChar *PPGeGetChar(const AtlasFont &atlasfont, unsigned int cval)`r`n{`r`n`t// PPSSPP's PPGe atlas does not contain U+570B (traditional 國).`r`n`t// Use the Japanese shinjitai U+56FD (国) instead of rendering U+FFFD.`r`n`tif (cval == 0x570B)`r`n`t`tcval = 0x56FD;`r`n`tconst AtlasChar *c = atlasfont.getChar(cval);"
+          $needle = "`t}`r`n`r`n`tLearnFile(`"assets/lang/zh_CN.ini`", `"Chinese`", kanji, 0x3400, 0xFFFF);"
+          $replacement = "`t}`r`n`r`n`t// Add traditional 國 explicitly. It is used by some Japanese PSP titles but is not in the compact default kanji filter.`r`n`tkanji.insert(0x570B);`r`n`r`n`tLearnFile(`"assets/lang/zh_CN.ini`", `"Chinese`", kanji, 0x3400, 0xFFFF);"
           if (!$text.Contains($needle)) {
-            throw "PPGeGetChar patch point not found"
+            throw "atlastool kanji patch point not found"
           }
           $text = $text.Replace($needle, $replacement)
           Set-Content -Path $path -Value $text -Encoding utf8
-          Select-String -Path $path -Pattern '570B|56FD' -Context 2,2
+          Select-String -Path $path -Pattern 'kanji.insert\(0x570B\)' -Context 2,2
+
+      - name: Build PPGe atlastool
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set VSINSTALL=%%i
+          call "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat"
+          msbuild ppsspp\ext\native\tools\atlastool\atlastool.vcxproj /m /p:Configuration=Release /p:Platform=x64
+
+      - name: Generate PPGe atlas containing 國
+        shell: pwsh
+        run: |
+          $noto = (Resolve-Path "ppsspp/NotoSansCJKjp-Regular.otf").Path.Replace('\','/')
+          $jp = "C:/Windows/Fonts/meiryo.ttc"
+          if (!(Test-Path $jp)) {
+            $jp = $noto
+          }
+          @"
+          2048
+          font UBUNTU24 $jp UWkhcsGR 24
+          font UBUNTU24 $noto UWEhkcRGHKVTe 24 0
+          image I_CROSS source_assets/image/cross.png copy
+          image I_CIRCLE source_assets/image/circle.png copy
+          image I_SQUARE source_assets/image/square.png copy
+          image I_TRIANGLE source_assets/image/triangle.png copy
+          "@ | Set-Content "ppsspp/ppge_atlasscript.txt" -Encoding ascii
+
+          Push-Location ppsspp
+          & ".\ext\native\tools\build\atlastool.exe" "ppge_atlasscript.txt" "ppge"
+          if ($LASTEXITCODE -ne 0) { throw "atlastool failed with exit code $LASTEXITCODE" }
+          Copy-Item "ppge_atlas.zim" "assets/ppge_atlas.zim" -Force
+          Copy-Item "ppge_atlas.meta" "assets/ppge_atlas.meta" -Force
+          Pop-Location
+
+          Get-Item "ppsspp/assets/ppge_atlas.zim","ppsspp/assets/ppge_atlas.meta" | Format-Table Name,Length
 
       - name: Configure CMake for Libretro
         shell: pwsh
@@ -51,22 +92,35 @@ jobs:
         run: |
           cmake --build build --config Release --target ppsspp_libretro -- /m:2
 
-      - name: Locate and verify output
-        id: locate
+      - name: Prepare RetroArch package
         shell: pwsh
         run: |
           $dll = Get-ChildItem -Path build -Recurse -Filter ppsspp_libretro.dll | Select-Object -First 1
-          if (!$dll) {
-            throw "ppsspp_libretro.dll was not produced"
-          }
-          Write-Host "Found: $($dll.FullName)"
-          Get-Item $dll.FullName | Format-List Name,Length,LastWriteTime
-          "dll_path=$($dll.FullName)" >> $env:GITHUB_OUTPUT
+          if (!$dll) { throw "ppsspp_libretro.dll was not produced" }
 
-      - name: Upload ppsspp_libretro.dll
+          New-Item -ItemType Directory -Force -Path "package/cores" | Out-Null
+          New-Item -ItemType Directory -Force -Path "package/system/PPSSPP" | Out-Null
+          Copy-Item $dll.FullName "package/cores/ppsspp_libretro.dll" -Force
+          Copy-Item "ppsspp/assets/ppge_atlas.zim" "package/system/PPSSPP/ppge_atlas.zim" -Force
+          Copy-Item "ppsspp/assets/ppge_atlas.meta" "package/system/PPSSPP/ppge_atlas.meta" -Force
+
+          @"
+          PPSSPP v1.19.3 Libretro - PPGe U+570B 國 atlas build
+
+          1. Backup your existing RetroArch cores\ppsspp_libretro.dll.
+          2. Merge this package into the RetroArch directory.
+          3. The two PPGe atlas files must replace system\PPSSPP\ppge_atlas.zim and ppge_atlas.meta.
+          4. Fully exit RetroArch before testing again.
+
+          This build does NOT remap 國 to 国.  The atlas itself contains a real U+570B glyph.
+          "@ | Set-Content "package/README-U570B.txt" -Encoding utf8
+
+          Get-ChildItem package -Recurse | Select-Object FullName,Length
+
+      - name: Upload complete RetroArch package
         uses: actions/upload-artifact@v4
         with:
-          name: ppsspp-libretro-v1.19.3-ppge-u570b-fix-windows-x64
-          path: ${{ steps.locate.outputs.dll_path }}
+          name: ppsspp-v1.19.3-real-U570B-retroarch-x64
+          path: package/
           if-no-files-found: error
           retention-days: 30
