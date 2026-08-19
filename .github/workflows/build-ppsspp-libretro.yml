@@ -27,6 +27,15 @@ jobs:
         shell: pwsh
         run: choco install make -y --no-progress
 
+      - name: Patch Libretro Makefile linker
+        shell: pwsh
+        run: |
+          $path = "ppsspp/libretro/Makefile"
+          $text = Get-Content $path -Raw
+          $text = $text -replace '(?m)^\s*LD = link\.exe\s*$', "`tLD = `"`$(VCCompilerToolsBinDir)/link.exe`""
+          Set-Content -Path $path -Value $text -Encoding utf8
+          Select-String -Path $path -Pattern 'LD ='
+
       - name: Build Windows x64 Libretro core with MSVC
         shell: cmd
         run: |
@@ -36,7 +45,7 @@ jobs:
           echo MSVC linker should be first:
           where link.exe
           cd ppsspp\libretro
-          make -j2 SHELL=cmd.exe platform=windows_msvc2019_desktop_x64
+          make -j2 platform=windows_msvc2019_desktop_x64
 
       - name: Verify output
         shell: pwsh
